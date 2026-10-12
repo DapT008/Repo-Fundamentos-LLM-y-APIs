@@ -1,0 +1,397 @@
+# ============================================================
+#  Fundamentos de Arquitectura LLM – Kubernetes Manifests
+#  Tema #4: Patrones y escalabilidad
+#
+#  Aplica con:
+#    kubectl apply -f infrastructure/kubernetes/
+#
+#  Estos manifests son DIDÁCTICOS — están pensados para
+#  que los estudiantes lean cada sección y entiendan el "por qué".
+# ============================================================
+
+# ──────────────────────────────────────────────────────────────
+# 1. NAMESPACE: aislamiento lógico de recursos
+# ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-lab
+  labels:
+    app.kubernetes.io/part-of: fundamentos-llm
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 2. ConfigMap: variables de configuración no sensibles
+#    Separar configuración del código (12-Factor App)
+# ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-lab-config
+  namespace: llm-lab
+data:
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  LOG_LEVEL: "info"
+  CORS_ORIGINS: "http://frontend"
+  APP_NAME: "LLM Lab API"
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 3. Secret: valores sensibles (base64 en prod, o External Secrets)
+#    kubectl create secret generic llm-lab-secrets \
+#      --from-literal=GEMINI_API_KEY=... \
+#      --from-literal=OPENAI_API_KEY=...
+# ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-lab-secrets
+  namespace: llm-lab
+type: Opaque
+# NOTA DOCENTE: En producción NUNCA incluir valores aquí en el repo.
+# Usar External Secrets Operator + HashiCorp Vault o AWS Secrets Manager.
+stringData:
+  GEMINI_API_KEY: "REEMPLAZAR_CON_TU_CLAVE"
+  OPENAI_API_KEY: "REEMPLAZAR_CON_TU_CLAVE"
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 4. Deployment: servicio Ollama (LLM local)
+#    Stateful-ish: usa PVC para guardar modelos descargados.
+# ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: llm-lab
+  labels:
+    app: ollama
+    tier: inference
+spec:
+  replicas: 1   # Ollama no escala horizontalmente con estado compartido fácilmente
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      # Si tienes GPU NVIDIA:
+      # nodeSelector:
+      #   accelerator: nvidia-gpu
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2"
+            limits:
+              memory: "8Gi"
+              cpu: "4"
+              # nvidia.com/gpu: "1"   # Descomentar si hay GPU
+          volumeMounts:
+            - name: ollama-models
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: ollama-models
+          persistentVolumeClaim:
+            claimName: ollama-models-pvc
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 5. PersistentVolumeClaim para modelos Ollama (~5-40 GB)
+# ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models-pvc
+  namespace: llm-lab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 6. Deployment: Backend FastAPI
+#    2 réplicas base → HPA escalará hasta 8
+# ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-backend
+  namespace: llm-lab
+  labels:
+    app: llm-backend
+    tier: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1         # Máximo 1 pod extra durante update
+      maxUnavailable: 0   # Sin downtime: siempre al menos replicas actuales
+  template:
+    metadata:
+      labels:
+        app: llm-backend
+      annotations:
+        # Prometheus scraping automático
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: backend
+          image: fundamentos-llm/backend:latest
+          imagePullPolicy: IfNotPresent   # En producción: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: llm-lab-config
+            - secretRef:
+                name: llm-lab-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          # Graceful shutdown: espera que requests en vuelo terminen
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+      terminationGracePeriodSeconds: 30
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 7. Deployment: Frontend React/Nginx
+# ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-frontend
+  namespace: llm-lab
+  labels:
+    app: llm-frontend
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-frontend
+  template:
+    metadata:
+      labels:
+        app: llm-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: fundamentos-llm/frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 8. Services: descubrimiento de red entre pods
+# ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: llm-lab
+spec:
+  selector:
+    app: ollama
+  ports:
+    - port: 11434
+      targetPort: 11434
+  type: ClusterIP   # Solo accesible dentro del cluster
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-backend
+  namespace: llm-lab
+spec:
+  selector:
+    app: llm-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-frontend
+  namespace: llm-lab
+spec:
+  selector:
+    app: llm-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 9. Ingress: punto de entrada externo (requiere ingress-nginx)
+#    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/...
+# ──────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-lab-ingress
+  namespace: llm-lab
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"    # Para streaming SSE
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"       # SSE requiere sin buffer
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"    # TLS automático
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: llm-lab.miempresa.com   # Cambiar por dominio real
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-backend
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-frontend
+                port:
+                  number: 80
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 10. HPA: Auto-scaling horizontal del backend
+#     Requiere metrics-server: kubectl apply -f https://...metrics-server.yaml
+# ──────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llm-backend-hpa
+  namespace: llm-lab
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llm-backend
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70    # Si CPU promedio > 70%, escalar
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60    # Espera 60s antes de otro scale-up
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60             # Máximo +2 pods cada 60 segundos
+    scaleDown:
+      stabilizationWindowSeconds: 300   # Espera 5 min antes de scale-down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120            # Máximo -1 pod cada 2 minutos
+
+---
+
+# ──────────────────────────────────────────────────────────────
+# 11. KEDA ScaledObject: scale-to-zero basado en cola de Kafka
+#     (Avanzado — requiere KEDA instalado)
+#     kubectl apply -f https://github.com/kedacore/keda/releases/...
+# ──────────────────────────────────────────────────────────────
+# apiVersion: keda.sh/v1alpha1
+# kind: ScaledObject
+# metadata:
+#   name: llm-worker-scaler
+#   namespace: llm-lab
+# spec:
+#   scaleTargetRef:
+#     name: llm-backend
+#   minReplicaCount: 0           # Scale-to-zero en horas sin tráfico
+#   maxReplicaCount: 10
+#   triggers:
+#     - type: kafka
+#       metadata:
+#         bootstrapServers: kafka.llm-lab.svc:9092
+#         consumerGroup: llm-workers
+#         topic: llm-requests
+#         lagThreshold: "100"    # 1 pod extra por cada 100 mensajes en cola

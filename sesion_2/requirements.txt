@@ -1,0 +1,8 @@
+# Entorno principal del curso (Python 3.12) — backend + laboratorios de las sesiones 1 y 2
+-r backend/requirements.txt
+
+# Laboratorios
+openai>=1.60        # cliente estándar "Chat Completions" (lab 02 de la sesión 2)
+
+# El laboratorio de Google ADK tiene su propio entorno:
+#   gcp-agent-platform/parte2_adk/requirements.txt

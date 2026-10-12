@@ -1,0 +1,221 @@
+# ============================================================
+#  Fundamentos de Arquitectura LLM – Docker Swarm Stack
+#  Tema #4: Patrones y escalabilidad
+#
+#  Inicializar Swarm (primera vez):
+#    docker swarm init
+#
+#  Desplegar/actualizar el stack:
+#    docker stack deploy -c infrastructure/docker-swarm/docker-stack.yml llm-lab
+#
+#  Ver estado:
+#    docker stack ps llm-lab
+#    docker service ls
+#
+#  Escalar manualmente el backend:
+#    docker service scale llm-lab_backend=4
+#
+#  Eliminar el stack:
+#    docker stack rm llm-lab
+# ============================================================
+
+version: "3.9"
+
+# ──────────────────────────────────────────────────────────────
+# REDES: aislamiento por capa
+# ──────────────────────────────────────────────────────────────
+networks:
+  frontend_net:
+    driver: overlay    # Overlay: comunicación entre nodos Swarm
+  backend_net:
+    driver: overlay
+  # Red externa para el proxy inverso
+  proxy_net:
+    driver: overlay
+    attachable: true
+
+# ──────────────────────────────────────────────────────────────
+# VOLÚMENES: persistencia entre reinicios
+# ──────────────────────────────────────────────────────────────
+volumes:
+  ollama_models:
+    driver: local
+  # Para producción multi-nodo, usar un driver de volumen compartido:
+  # driver: nfs / glusterfs / AWS EFS CSI plugin
+
+# ──────────────────────────────────────────────────────────────
+# CONFIGS: archivos de configuración inmutables en Swarm
+# ──────────────────────────────────────────────────────────────
+configs:
+  nginx_conf:
+    file: ./nginx/nginx.conf
+
+# ──────────────────────────────────────────────────────────────
+# SECRETS: valores sensibles gestionados por Swarm
+#   Crear con: echo "mi_clave" | docker secret create gemini_api_key -
+# ──────────────────────────────────────────────────────────────
+secrets:
+  gemini_api_key:
+    external: true    # Ya debe existir: docker secret create gemini_api_key ...
+  openai_api_key:
+    external: true
+
+# ──────────────────────────────────────────────────────────────
+# SERVICIOS
+# ──────────────────────────────────────────────────────────────
+services:
+
+  # ── 1. Traefik: reverse proxy + load balancer ─────────────
+  # En Docker Swarm, Traefik descubre servicios automáticamente
+  # vía labels y enruta tráfico sin reinicio.
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--providers.swarm.endpoint=unix:///var/run/docker.sock"
+      - "--providers.swarm.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--api.dashboard=true"
+      - "--log.level=INFO"
+    ports:
+      - target: 80
+        published: 80
+        mode: host       # "host" mode: mejor performance que ingress mode
+      - target: 443
+        published: 443
+        mode: host
+      - "8080:8080"      # Dashboard Traefik (desactivar en producción)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy_net
+    deploy:
+      mode: global       # 1 instancia en CADA nodo del Swarm
+      placement:
+        constraints:
+          - "node.role == manager"
+      update_config:
+        order: start-first   # Nuevo Traefik antes de bajar el viejo
+      restart_policy:
+        condition: any
+
+  # ── 2. Ollama: LLM local ──────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - backend_net
+    # NOTA: Ollama es stateful (modelos en disco). Se ejecuta
+    # como réplica única. Para HA real: NFS o S3-backed storage.
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.labels.gpu == true"   # Nodo con GPU si existe
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+          # generic_resources:
+          #   - discrete_resource_spec:
+          #       kind: NVIDIA-GPU
+          #       value: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s   # Ollama tarda en cargar modelos al inicio
+
+  # ── 3. Backend FastAPI ────────────────────────────────────
+  backend:
+    image: fundamentos-llm/backend:latest
+    networks:
+      - backend_net
+      - proxy_net
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - LOG_LEVEL=info
+    secrets:
+      - source: gemini_api_key
+        target: /run/secrets/gemini_api_key
+      - source: openai_api_key
+        target: /run/secrets/openai_api_key
+    labels:
+      # Traefik descubre automáticamente este servicio
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=PathPrefix(`/api`) || PathPrefix(`/health`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+      # Sticky sessions desactivadas: el backend es stateless
+      - "traefik.http.services.backend.loadbalancer.sticky=false"
+    deploy:
+      replicas: 2          # Mínimo 2 para HA básica
+      update_config:
+        parallelism: 1     # Actualiza 1 réplica a la vez (rolling update)
+        delay: 10s
+        order: start-first  # Inicia nueva réplica antes de bajar la vieja
+        failure_action: rollback
+      rollback_config:
+        parallelism: 0     # Rollback de todas las réplicas a la vez
+        order: stop-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - ollama
+
+  # ── 4. Frontend React/Nginx ───────────────────────────────
+  frontend:
+    image: fundamentos-llm/frontend:latest
+    networks:
+      - frontend_net
+      - proxy_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.frontend.entrypoints=web"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+
+  # ── 5. Watchtower: auto-actualización de imágenes ─────────
+  # En entornos de lab: detecta nuevas imágenes y actualiza
+  # automáticamente sin intervención manual.
+  # DESACTIVAR EN PRODUCCIÓN — usar CI/CD pipeline en su lugar.
+  watchtower:
+    image: containrrr/watchtower:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup --label-enable
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.role == manager"
