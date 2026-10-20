@@ -1,0 +1,67 @@
+# ============================================================
+# Sesión 3 — Seguridad, Alta Disponibilidad y Diseño
+# Python 3.12 | FastAPI | Ollama | JWT/OAuth2
+# ============================================================
+
+# --- Web Framework ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12     # form data / file uploads
+
+# --- Autenticación y Seguridad (Tema 5) ---
+python-jose[cryptography]==3.3.0  # JWT: crear y verificar tokens
+passlib[bcrypt]==1.7.4            # hash de contraseñas
+cryptography==43.0.3              # cifrado TLS/mTLS local
+
+# --- Validación y Serialización ---
+pydantic==2.10.2
+pydantic-settings==2.6.1
+
+# --- HTTP Client (para llamar a Ollama y proveedores externos) ---
+httpx==0.28.0
+aiohttp==3.11.9
+
+# --- Rate Limiting (Tema 5) ---
+slowapi==0.1.9               # rate limiting para FastAPI
+limits==3.14.0
+
+# --- Monitoreo y Logging (Tema 5) ---
+structlog==24.4.0             # structured logging JSON
+prometheus-client==0.21.1    # métricas Prometheus-ready
+python-json-logger==3.2.0
+
+# --- Base de datos (audit log, estado) ---
+# SQLite en dev, Postgres-ready en prod
+aiosqlite==0.20.0
+sqlalchemy[asyncio]==2.0.36
+
+# --- Análisis de Costos (Tema 6) ---
+pandas==2.2.3
+numpy==2.2.0
+
+# --- Documentación Automática ---
+pyyaml==6.0.2               # leer/escribir plantillas YAML
+jinja2==3.1.4               # plantillas de documentación Tema 6
+markdown==3.7
+
+# --- Utilidades ---
+python-dotenv==1.0.1
+rich==13.9.4                 # salida formateada en labs/scripts
+click==8.1.8                 # CLI scripts
+tabulate==0.9.0              # tablas en terminal (labs)
+humanize==4.11.0
+
+# --- Testing ---
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx==0.28.0                # cliente de prueba para FastAPI
+faker==33.1.0                # datos de prueba
+
+# ============================================================
+# Instalación
+#   pip install -r requirements.txt --break-system-packages
+#   o con entorno virtual:
+#   python3.12 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+# ============================================================

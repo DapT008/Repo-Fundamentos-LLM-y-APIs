@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-lab
+  labels:
+    name: llm-lab
+---
+# Política: el backend SOLO puede recibir tráfico del frontend y del ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-ingress-policy
+  namespace: llm-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: llm-security-backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: llm-security-frontend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    # Permitir salida a Ollama
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ollama
+      ports:
+        - protocol: TCP
+          port: 11434
+    # Permitir DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Política: el frontend SOLO puede hablar con el backend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-policy
+  namespace: llm-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: llm-security-frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 5173
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: llm-security-backend
+      ports:
+        - protocol: TCP
+          port: 8000
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Política: Ollama solo acepta tráfico del backend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-policy
+  namespace: llm-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: ollama
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: llm-security-backend
+      ports:
+        - protocol: TCP
+          port: 11434
+---
+# Política por defecto: denegar todo tráfico no explicitado
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: llm-lab
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

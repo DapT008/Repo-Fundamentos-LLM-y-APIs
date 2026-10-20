@@ -1,0 +1,94 @@
+version: "3.9"
+
+# ============================================================
+# Sesión 3 · LLM Security Lab
+# Arranca Ollama + Backend + Frontend con un solo comando:
+#   docker compose up -d --build
+#
+# Endpoints disponibles:
+#   Frontend:  http://localhost:8080
+#   Backend:   http://localhost:8000/docs
+#   Ollama:    http://localhost:11434
+# ============================================================
+
+services:
+
+  # ── Ollama — Motor LLM local ─────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: llm-lab-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    # Si tienes GPU NVIDIA: descomentar la siguiente sección
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+
+  # ── Backend — FastAPI ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: llm-lab-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - DEBUG=false
+      - ENVIRONMENT=production
+      # ⚠️ CAMBIAR en producción:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-CAMBIA_ESTE_SECRETO_EN_PRODUCCION}
+    volumes:
+      - ./backend/logs:/app/logs
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Frontend — React 18 + Nginx ───────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:8000
+    container_name: llm-lab-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ── Ollama Initializer — descargar modelo al arrancar ────────────────────
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: llm-lab-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command: >
+      curl -X POST http://ollama:11434/api/pull
+      -H "Content-Type: application/json"
+      -d '{"name": "llama3.2"}'
+    restart: "no"
+
+volumes:
+  ollama_models:
+    driver: local

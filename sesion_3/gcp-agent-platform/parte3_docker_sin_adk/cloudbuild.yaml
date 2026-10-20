@@ -1,0 +1,58 @@
+# Cloud Build CI/CD — Agente sin ADK
+# Uso: gcloud builds submit --config cloudbuild.yaml
+
+substitutions:
+  _PROJECT_ID: ${PROJECT_ID}
+  _REGION: us-central1
+  _SERVICE_NAME: llm-security-agent-direct
+  _IMAGE: gcr.io/${_PROJECT_ID}/${_SERVICE_NAME}
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    args: ['build', '-t', '${_IMAGE}:${SHORT_SHA}', '-t', '${_IMAGE}:latest', '.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    waitFor: ['build']
+    args: ['push', '--all-tags', '${_IMAGE}']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
+    waitFor: ['push']
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image=${_IMAGE}:${SHORT_SHA}'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--min-instances=0'
+      - '--max-instances=10'
+      - '--memory=256Mi'
+      - '--cpu=1'
+      - '--concurrency=100'
+      - '--timeout=30s'
+      - '--set-env-vars=GOOGLE_CLOUD_PROJECT=${_PROJECT_ID},GOOGLE_CLOUD_LOCATION=${_REGION}'
+      - '--set-env-vars=GEMINI_MODEL=gemini-2.0-flash-001,MAX_HISTORY_TURNS=10'
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'show-url'
+    waitFor: ['deploy']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        URL=$(gcloud run services describe ${_SERVICE_NAME} \
+          --region=${_REGION} --format='value(status.url)')
+        echo "✅ Desplegado: $URL"
+        echo "Probar: curl $URL/health"
+
+images:
+  - '${_IMAGE}:${SHORT_SHA}'
+  - '${_IMAGE}:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,159 @@
+version: "3.9"
+
+# Docker Swarm Stack — Sesión 3: Seguridad y Alta Disponibilidad
+# Desplegar con: docker stack deploy -c stack.yml llm-security
+#
+# Prerequisitos:
+#   docker swarm init
+#   docker secret create jwt_secret_key <(python3 -c "import secrets; print(secrets.token_hex(32))")
+#   docker network create --driver overlay --attachable llm_overlay
+
+networks:
+  llm_overlay:
+    external: true
+  backend_internal:
+    driver: overlay
+    internal: true   # Sin acceso a internet directo
+
+secrets:
+  jwt_secret_key:
+    external: true
+
+services:
+
+  # ── Frontend (React + Nginx) ─────────────────────────────────────────────
+  frontend:
+    image: ${REGISTRY:-gcr.io/my-project}/llm-security-frontend:${TAG:-latest}
+    networks:
+      - llm_overlay
+    ports:
+      - target: 5173
+        published: 80
+        protocol: tcp
+        mode: ingress
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: start-first    # Zero-downtime: arrancar nuevo antes de bajar viejo
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5173/health.txt"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────
+  backend:
+    image: ${REGISTRY:-gcr.io/my-project}/llm-security-backend:${TAG:-latest}
+    networks:
+      - llm_overlay
+      - backend_internal
+    environment:
+      - ENVIRONMENT=production
+      - OLLAMA_URL=http://ollama:11434
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - REFRESH_TOKEN_EXPIRE_DAYS=7
+    secrets:
+      - source: jwt_secret_key
+        target: /run/secrets/jwt_secret_key
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 15s
+        failure_action: rollback
+        order: start-first
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+      placement:
+        constraints:
+          - "node.role == worker"
+        preferences:
+          - spread: node.id  # Distribuir replicas en nodos distintos
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Ollama (LLM local) ───────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    networks:
+      - backend_internal
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.labels.gpu == true"  # Pinned a nodo con GPU si existe
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+        reservations:
+          cpus: "1.0"
+          memory: 4G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 2
+
+  # ── Visualizador Swarm (solo en desarrollo) ──────────────────────────────
+  visualizer:
+    image: dockersamples/visualizer:stable
+    ports:
+      - target: 8080
+        published: 8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - llm_overlay
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.role == manager"
+      labels:
+        # Solo habilitar en entornos de desarrollo
+        - "com.docker.stack.description=Swarm Visualizer - SOLO DESARROLLO"
+
+volumes:
+  ollama_models:
+    driver: local
