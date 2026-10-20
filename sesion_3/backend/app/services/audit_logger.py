@@ -15,7 +15,6 @@ Eventos registrados:
 import asyncio
 import hashlib
 import json
-import os
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -52,12 +51,13 @@ class AuditLogger:
     """
 
     _instance: "AuditLogger | None" = None
-    _lock = asyncio.Lock()
+    _class_lock = asyncio.Lock()  # protege la creación del singleton
 
     def __init__(self, log_path: str):
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._last_hash = "GENESIS"   # primer bloque de la cadena
+        self._write_lock = asyncio.Lock()  # protege las escrituras al archivo
 
         # Leer último hash si el archivo ya existe
         if self.log_path.exists():
@@ -67,7 +67,7 @@ class AuditLogger:
 
     @classmethod
     async def initialize(cls) -> "AuditLogger":
-        async with cls._lock:
+        async with cls._class_lock:
             if cls._instance is None:
                 cls._instance = cls(settings.AUDIT_LOG_PATH)
                 logger.info("Audit logger inicializado", path=settings.AUDIT_LOG_PATH)
@@ -107,14 +107,13 @@ class AuditLogger:
 
         line = json.dumps(entry, ensure_ascii=False) + "\n"
 
-        async with self._lock:
-            with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(line)
+        async with self._write_lock:
+            await asyncio.to_thread(self._append_line, line)
             self._last_hash = entry_hash
 
         logger.info(
-            "Audit entry",
-            event=event.value,
+            "audit_entry",
+            audit_event=event.value,
             user=user,
             ip=ip,
             severity=severity,
@@ -122,12 +121,21 @@ class AuditLogger:
 
     # ── Lectura ──────────────────────────────────────────────────────────────
 
+    def _append_line(self, line: str) -> None:
+        """Escribe una línea al archivo de log (operación bloqueante, ejecutar en thread)."""
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+
+    def _read_lines(self) -> list[str]:
+        """Lee todas las líneas del archivo (operación bloqueante, ejecutar en thread)."""
+        return self.log_path.read_text(encoding="utf-8").strip().splitlines()
+
     async def get_recent(self, n: int = 50) -> list[dict]:
         """Retorna las últimas N entradas del log."""
         if not self.log_path.exists():
             return []
 
-        lines = self.log_path.read_text(encoding="utf-8").strip().splitlines()
+        lines = await asyncio.to_thread(self._read_lines)
         recent = lines[-n:] if len(lines) > n else lines
         return [json.loads(line) for line in reversed(recent)]
 
@@ -139,7 +147,7 @@ class AuditLogger:
         if not self.log_path.exists():
             return {"ok": True, "entries": 0}
 
-        lines = self.log_path.read_text(encoding="utf-8").strip().splitlines()
+        lines = await asyncio.to_thread(self._read_lines)
         prev_hash = "GENESIS"
 
         for i, line in enumerate(lines):
@@ -165,19 +173,10 @@ class AuditLogger:
 
     def _read_last_hash(self) -> str:
         try:
-            # Leer el último hash del archivo existente
-            with open(self.log_path, "rb") as f:
-                # Buscar la última línea no vacía
-                f.seek(0, os.SEEK_END)
-                pos = f.tell()
-                while pos > 0:
-                    pos -= 1
-                    f.seek(pos)
-                    if f.read(1) == b"\n" and pos < f.seek(0, os.SEEK_END) - 1:
-                        break
-                last_line = f.readline().decode().strip()
-                if last_line:
-                    return json.loads(last_line).get("hash", "GENESIS")
+            text = self.log_path.read_text(encoding="utf-8")
+            lines = [line for line in text.splitlines() if line.strip()]
+            if lines:
+                return json.loads(lines[-1]).get("hash", "GENESIS")
         except Exception:
             pass
         return "GENESIS"

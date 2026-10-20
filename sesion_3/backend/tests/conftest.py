@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 # Configurar entorno de test ANTES de importar la app
 import os
-os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only-not-production"
+os.environ["JWT_SECRET_KEY"] = "test-secret-key-for-testing-only-not-production"
 os.environ["ENVIRONMENT"] = "test"
 os.environ["OLLAMA_URL"] = "http://localhost:11434"
 
@@ -23,11 +23,20 @@ def anyio_backend():
 async def client():
     """Cliente HTTP async para tests de integración."""
     from app.main import app
+    from app.services.audit_logger import AuditLogger
+
+    # El lifespan de la app no se ejecuta con ASGITransport, así que
+    # inicializamos el AuditLogger manualmente.
+    await AuditLogger.initialize()
+
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test"
     ) as ac:
         yield ac
+
+    # Resetear el singleton entre tests para evitar estado compartido
+    AuditLogger._instance = None
 
 
 @pytest_asyncio.fixture
@@ -36,7 +45,7 @@ async def admin_token(client):
     response = await client.post(
         "/auth/token",
         data={
-            "username": "admin",
+            "username": "admin@techcorp.com",
             "password": "admin123",
             "grant_type": "password",
         },
@@ -52,8 +61,8 @@ async def user_token(client):
     response = await client.post(
         "/auth/token",
         data={
-            "username": "alice",
-            "password": "alice123",
+            "username": "dev@techcorp.com",
+            "password": "dev123",
             "grant_type": "password",
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},

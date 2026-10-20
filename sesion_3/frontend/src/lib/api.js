@@ -16,16 +16,74 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// Redirigir a login si el token expiró (401)
+let isRefreshing = false
+let refreshSubscribers = []
+
+function subscribeTokenRefresh(cb) {
+  refreshSubscribers.push(cb)
+}
+
+function notifySubscribers(token) {
+  refreshSubscribers.forEach((cb) => cb(token))
+  refreshSubscribers = []
+}
+
+function clearTokens() {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('refresh_token')
+}
+
+// Intentar refresh antes de redirigir a login
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('token_type')
-      window.location.href = '/login'
+  async (error) => {
+    const original = error.config
+
+    if (error.response?.status !== 401 || original._retry) {
+      return Promise.reject(error)
     }
-    return Promise.reject(error)
+
+    const refreshToken = localStorage.getItem('refresh_token')
+    if (!refreshToken) {
+      clearTokens()
+      window.location.href = '/login'
+      return Promise.reject(error)
+    }
+
+    if (isRefreshing) {
+      return new Promise((resolve, reject) => {
+        subscribeTokenRefresh((newToken) => {
+          if (newToken) {
+            original.headers.Authorization = `Bearer ${newToken}`
+            resolve(api(original))
+          } else {
+            reject(error)
+          }
+        })
+      })
+    }
+
+    original._retry = true
+    isRefreshing = true
+
+    try {
+      const { data } = await axios.post(`${BASE_URL}/auth/refresh`, {
+        refresh_token: refreshToken,
+      })
+      localStorage.setItem('access_token', data.access_token)
+      localStorage.setItem('refresh_token', data.refresh_token)
+      api.defaults.headers.common.Authorization = `Bearer ${data.access_token}`
+      notifySubscribers(data.access_token)
+      original.headers.Authorization = `Bearer ${data.access_token}`
+      return api(original)
+    } catch {
+      clearTokens()
+      notifySubscribers(null)
+      window.location.href = '/login'
+      return Promise.reject(error)
+    } finally {
+      isRefreshing = false
+    }
   }
 )
 
@@ -48,7 +106,7 @@ export const getMe = async () => {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
-export const sendMessage = async (message, model = 'llama3.2') => {
+export const sendMessage = async (message, model = 'llama3.2:3b') => {
   const { data } = await api.post('/api/chat', { message, model })
   return data
 }

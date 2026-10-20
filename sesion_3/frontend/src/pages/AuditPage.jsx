@@ -25,7 +25,7 @@ export default function AuditPage() {
     setError('')
     try {
       const data = await getAuditLogs()
-      setLogs(data.logs || data)
+      setLogs(data.entries || [])
     } catch (err) {
       setError(err.response?.data?.detail || 'Error cargando logs (¿tienes scope admin?)')
     } finally {
@@ -39,7 +39,7 @@ export default function AuditPage() {
       const data = await verifyIntegrity()
       setIntegrity(data)
     } catch (err) {
-      setIntegrity({ valid: false, error: err.response?.data?.detail || 'Error' })
+      setIntegrity({ ok: false, message: err.response?.data?.detail || 'Error' })
     } finally {
       setIntegrityLoading(false)
     }
@@ -69,16 +69,16 @@ export default function AuditPage() {
       {integrity && (
         <div style={{
           ...styles.integrityBanner,
-          background: integrity.valid ? 'rgba(0,230,118,0.08)' : 'rgba(255,82,82,0.08)',
-          borderColor: integrity.valid ? 'rgba(0,230,118,0.25)' : 'rgba(255,82,82,0.25)',
+          background: integrity.ok ? 'rgba(0,230,118,0.08)' : 'rgba(255,82,82,0.08)',
+          borderColor: integrity.ok ? 'rgba(0,230,118,0.25)' : 'rgba(255,82,82,0.25)',
         }}>
-          {integrity.valid
+          {integrity.ok
             ? <CheckCircle size={16} color={C.green} style={{ marginRight: 8 }} />
             : <XCircle size={16} color={C.error} style={{ marginRight: 8 }} />}
-          <span style={{ color: integrity.valid ? C.green : C.error, fontWeight: 600 }}>
-            {integrity.valid
-              ? `Cadena íntegra · ${integrity.total_entries} entradas verificadas`
-              : `Integridad comprometida: ${integrity.error || 'hash mismatch'}`}
+          <span style={{ color: integrity.ok ? C.green : C.error, fontWeight: 600 }}>
+            {integrity.message || (integrity.ok
+              ? `Cadena íntegra · ${integrity.entries} entradas verificadas`
+              : 'Integridad comprometida')}
           </span>
         </div>
       )}
@@ -128,7 +128,7 @@ function LogRow({ log }) {
           </span>
         </span>
         <span style={{ flex: '0 0 200px', color: C.text, fontSize: '0.8rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {log.user_id || '—'}
+          {log.user || '—'}
         </span>
         <span style={{ flex: 1, color: C.muted, fontSize: '0.8rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {log.details ? JSON.stringify(log.details).substring(0, 60) : '—'}

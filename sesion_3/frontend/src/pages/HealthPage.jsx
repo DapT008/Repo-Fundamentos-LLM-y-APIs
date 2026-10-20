@@ -39,14 +39,16 @@ export default function HealthPage() {
     return () => clearInterval(id)
   }, [])
 
+  // Dependency statuses: "ok" | "degraded" | "down"
+  // Overall status: "healthy" | "degraded" | "unhealthy"
   const statusIcon = (s) => {
-    if (s === 'healthy') return <CheckCircle size={16} color={C.green} />
+    if (s === 'healthy' || s === 'ok') return <CheckCircle size={16} color={C.green} />
     if (s === 'degraded') return <AlertTriangle size={16} color={C.gold} />
     return <XCircle size={16} color={C.error} />
   }
 
   const statusColor = (s) => {
-    if (s === 'healthy') return C.green
+    if (s === 'healthy' || s === 'ok') return C.green
     if (s === 'degraded') return C.gold
     return C.error
   }
@@ -85,17 +87,33 @@ export default function HealthPage() {
             <StatRow label="Timestamp" value={new Date(health.timestamp).toLocaleTimeString()} />
           </Card>
 
-          {/* Ollama */}
-          <Card title="Ollama LLM">
-            <StatRow label="Estado" value={
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor(health.ollama?.status) }}>
-                {statusIcon(health.ollama?.status)}
-                {health.ollama?.status?.toUpperCase() || '—'}
-              </span>
-            } />
-            <StatRow label="Latencia" value={health.ollama?.latency_ms ? `${health.ollama.latency_ms} ms` : '—'} />
-            <StatRow label="Modelos" value={health.ollama?.models?.join(', ') || '—'} />
-          </Card>
+          {/* Ollama — backend returns deps array, find by name */}
+          {(() => {
+            const ollama = health.dependencies?.find(d => d.name === 'ollama')
+            const models = ollama?.details?.models_disponibles
+            return (
+              <Card title="Ollama LLM">
+                <StatRow label="Estado" value={
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: statusColor(ollama?.status) }}>
+                    {statusIcon(ollama?.status)}
+                    {ollama?.status?.toUpperCase() || '—'}
+                  </span>
+                } />
+                <StatRow label="Latencia" value={ollama?.latency_ms != null ? `${ollama.latency_ms} ms` : '—'} />
+                <StatRow
+                  label="Modelos"
+                  value={models?.length ? models.join(', ') : ollama?.status === 'down' ? 'Sin conexión' : '—'}
+                />
+                {ollama?.details?.error && (
+                  <StatRow label="Error" value={
+                    <span style={{ color: C.error, fontSize: '0.8rem' }}>
+                      {ollama.details.hint || ollama.details.error}
+                    </span>
+                  } />
+                )}
+              </Card>
+            )
+          })()}
 
           {/* Circuit Breaker */}
           {circuit && (
@@ -105,20 +123,28 @@ export default function HealthPage() {
                   {circuit.state === 'CERRADO' ? '🟢' : circuit.state === 'SEMIABIERTO' ? '🟡' : '🔴'} {circuit.state}
                 </span>
               } />
-              <StatRow label="Fallos consecutivos" value={circuit.failures || 0} />
-              <StatRow label="Umbral de apertura" value={circuit.threshold || '—'} />
-              <StatRow label="Timeout recuperación" value={circuit.recovery_timeout ? `${circuit.recovery_timeout}s` : '—'} />
+              <StatRow label="Fallos consecutivos" value={circuit.failure_count ?? 0} />
+              <StatRow label="Umbral de apertura" value={circuit.threshold ?? '—'} />
+              <StatRow
+                label="Retry en"
+                value={circuit.seconds_until_retry > 0 ? `${Math.ceil(circuit.seconds_until_retry)}s` : '—'}
+              />
             </Card>
           )}
 
           {/* Disco */}
-          {health.disk && (
-            <Card title="Almacenamiento">
-              <StatRow label="Total" value={`${health.disk.total_gb?.toFixed(1)} GB`} />
-              <StatRow label="Libre" value={`${health.disk.free_gb?.toFixed(1)} GB`} />
-              <StatRow label="Usado" value={`${health.disk.used_pct?.toFixed(0)}%`} />
-            </Card>
-          )}
+          {(() => {
+            const disk = health.dependencies?.find(d => d.name === 'disk')
+            return disk ? (
+              <Card title="Almacenamiento">
+                <StatRow label="Libre" value={`${disk.details?.free_gb?.toFixed(1) ?? '—'} GB`} />
+                <StatRow label="Libre (%)" value={`${disk.details?.free_pct?.toFixed(0) ?? '—'}%`} />
+                <StatRow label="Estado" value={
+                  <span style={{ color: statusColor(disk.status) }}>{disk.status?.toUpperCase()}</span>
+                } />
+              </Card>
+            ) : null
+          })()}
         </div>
       ) : (
         <div style={styles.empty}>No se pudo conectar al backend</div>

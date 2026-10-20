@@ -11,11 +11,21 @@
 #   make docker     → levantar todo con Docker
 #   make clean      → limpiar archivos temporales
 # ============================================================
+#
+# NOTA TÉCNICA: cada línea de receta Make corre en un subshell independiente,
+# por lo que "source .venv/bin/activate" NO persiste entre líneas.
+# La solución es llamar a los ejecutables del venv por su ruta completa.
+# ============================================================
 
 PYTHON   := python3.12
-PIP      := $(PYTHON) -m pip
 VENV     := .venv
-ACTIVATE := source $(VENV)/bin/activate
+VENV_BIN := $(VENV)/bin
+
+# Ejecutables del entorno virtual (ruta relativa al directorio del proyecto)
+VENV_PIP    := $(VENV_BIN)/pip
+VENV_PYTHON := $(VENV_BIN)/python
+VENV_PYTEST := $(VENV_BIN)/pytest
+VENV_UVICORN := $(VENV_BIN)/uvicorn
 
 .PHONY: setup backend frontend test labs lab09 lab10 lab11 lab12 lab13 lab14 \
         simulado docker docker-down clean help
@@ -26,8 +36,8 @@ setup:
 	@echo "── Creando entorno virtual con Python 3.12 ──"
 	$(PYTHON) -m venv $(VENV)
 	@echo "── Instalando dependencias del backend ──"
-	$(ACTIVATE) && pip install -r requirements.txt --break-system-packages 2>/dev/null || \
-	$(ACTIVATE) && pip install -r requirements.txt
+	$(VENV_PIP) install --upgrade pip
+	$(VENV_PIP) install -r requirements.txt
 	@echo "── Creando backend/.env desde .env.example ──"
 	@test -f backend/.env || cp backend/.env.example backend/.env
 	@echo "── Instalando dependencias del frontend ──"
@@ -42,8 +52,8 @@ setup:
 
 backend:
 	@echo "── Iniciando FastAPI en http://localhost:8000/docs ──"
-	@test -f $(VENV)/bin/activate || (echo "⚠️  Ejecuta 'make setup' primero" && exit 1)
-	cd backend && $(ACTIVATE) && uvicorn app.main:app --reload --port 8000
+	@test -f $(VENV_BIN)/uvicorn || (echo "⚠️  Ejecuta 'make setup' primero" && exit 1)
+	cd backend && ../$(VENV_UVICORN) app.main:app --reload --port 8000
 
 frontend:
 	@echo "── Iniciando React en http://localhost:5173 ──"
@@ -52,7 +62,8 @@ frontend:
 
 simulado:
 	@echo "── Iniciando Ollama simulado (sin GPU) en puerto 11434 ──"
-	@$(ACTIVATE) && $(PYTHON) scripts/ollama_simulado.py
+	@test -f $(VENV_BIN)/python || (echo "⚠️  Ejecuta 'make setup' primero" && exit 1)
+	$(VENV_PYTHON) scripts/ollama_simulado.py
 
 docker:
 	@echo "── Levantando servicios con Docker Compose ──"
@@ -69,7 +80,8 @@ docker-down:
 
 test:
 	@echo "── Ejecutando pruebas ──"
-	cd backend && $(ACTIVATE) && pytest tests/ -v --cov=app --cov-report=term-missing
+	@test -f $(VENV_BIN)/pytest || (echo "⚠️  Ejecuta 'make setup' primero" && exit 1)
+	cd backend && ../$(VENV_PYTEST) tests/ -v --cov=app --cov-report=term-missing
 
 # ─── Labs ────────────────────────────────────────────────────────────────────
 
@@ -77,35 +89,35 @@ labs: lab09 lab10 lab11 lab12 lab13 lab14
 
 lab09:
 	@echo "── Lab 09 · Autenticación JWT ──"
-	$(ACTIVATE) && $(PYTHON) labs/sesion3/09_autenticacion_jwt.py
+	$(VENV_PYTHON) labs/sesion3/09_autenticacion_jwt.py
 
 lab10:
 	@echo "── Lab 10 · Rate Limiting y WAF ──"
-	$(ACTIVATE) && $(PYTHON) labs/sesion3/10_rate_limiting_y_waf.py
+	$(VENV_PYTHON) labs/sesion3/10_rate_limiting_y_waf.py
 
 lab11:
 	@echo "── Lab 11 · Alta Disponibilidad ──"
-	$(ACTIVATE) && $(PYTHON) labs/sesion3/11_alta_disponibilidad.py
+	$(VENV_PYTHON) labs/sesion3/11_alta_disponibilidad.py
 
 lab12:
 	@echo "── Lab 12 · Monitoreo y Logging ──"
-	$(ACTIVATE) && $(PYTHON) labs/sesion3/12_monitoreo_y_logging.py
+	$(VENV_PYTHON) labs/sesion3/12_monitoreo_y_logging.py
 
 lab13:
 	@echo "── Lab 13 · Diseño Arquitectónico ──"
-	$(ACTIVATE) && $(PYTHON) labs/sesion3/13_diseno_arquitectonico.py
+	$(VENV_PYTHON) labs/sesion3/13_diseno_arquitectonico.py
 
 lab14:
 	@echo "── Lab 14 · Análisis de Costos ──"
-	$(ACTIVATE) && $(PYTHON) labs/sesion3/14_analisis_costos_proyecto.py
+	$(VENV_PYTHON) labs/sesion3/14_analisis_costos_proyecto.py
 
 # ─── Limpieza ────────────────────────────────────────────────────────────────
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	rm -rf backend/logs/*.jsonl 2>/dev/null || true
-	rm -rf backend/llm_security_lab.db 2>/dev/null || true
+	rm -f backend/logs/*.jsonl 2>/dev/null || true
+	rm -f backend/llm_security_lab.db 2>/dev/null || true
 	@echo "✅ Limpieza completa"
 
 # ─── Ayuda ───────────────────────────────────────────────────────────────────

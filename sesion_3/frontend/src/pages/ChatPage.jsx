@@ -56,7 +56,7 @@ export default function ChatPage() {
       if (data.circuit_state) setCircuitState(data.circuit_state)
     } catch (err) {
       const errMsg = err.response?.data?.detail || 'Error al conectar con el backend'
-      const isWaf = err.response?.status === 400 && errMsg.includes('WAF')
+      const isWaf = err.response?.status === 400
       setMessages(prev => [...prev, {
         role: 'error',
         content: errMsg,
@@ -144,6 +144,75 @@ export default function ChatPage() {
   )
 }
 
+// Renders a subset of markdown: headers, bold, italic, inline code, code blocks, lists, newlines.
+function MarkdownContent({ text }) {
+  const lines = text.split('\n')
+  const elements = []
+  let i = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    // Fenced code block
+    if (line.startsWith('```')) {
+      const lang = line.slice(3).trim()
+      const codeLines = []
+      i++
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        codeLines.push(lines[i])
+        i++
+      }
+      elements.push(
+        <pre key={i} style={styles.mdPre}>
+          <code style={styles.mdCode}>{codeLines.join('\n')}</code>
+        </pre>
+      )
+      i++
+      continue
+    }
+
+    // Headers
+    if (line.startsWith('### ')) {
+      elements.push(<h3 key={i} style={styles.mdH3}>{inlineMarkdown(line.slice(4))}</h3>)
+    } else if (line.startsWith('## ')) {
+      elements.push(<h2 key={i} style={styles.mdH2}>{inlineMarkdown(line.slice(3))}</h2>)
+    } else if (line.startsWith('# ')) {
+      elements.push(<h1 key={i} style={styles.mdH1}>{inlineMarkdown(line.slice(2))}</h1>)
+    // Unordered list item
+    } else if (/^[-*] /.test(line)) {
+      elements.push(<li key={i} style={styles.mdLi}>{inlineMarkdown(line.slice(2))}</li>)
+    // Ordered list item
+    } else if (/^\d+\. /.test(line)) {
+      elements.push(<li key={i} style={styles.mdLi}>{inlineMarkdown(line.replace(/^\d+\. /, ''))}</li>)
+    // Blank line → spacer
+    } else if (line.trim() === '') {
+      elements.push(<div key={i} style={{ height: 8 }} />)
+    // Normal paragraph line
+    } else {
+      elements.push(<p key={i} style={styles.mdP}>{inlineMarkdown(line)}</p>)
+    }
+    i++
+  }
+
+  return <>{elements}</>
+}
+
+// Handles **bold**, *italic*, `code` inline spans.
+function inlineMarkdown(text) {
+  const parts = []
+  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g
+  let last = 0, m
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    if (m[2] !== undefined) parts.push(<strong key={m.index}>{m[2]}</strong>)
+    else if (m[3] !== undefined) parts.push(<em key={m.index}>{m[3]}</em>)
+    else if (m[4] !== undefined) parts.push(<code key={m.index} style={styles.mdInlineCode}>{m[4]}</code>)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length === 1 && typeof parts[0] === 'string' ? parts[0] : parts
+}
+
 function MessageBubble({ msg }) {
   const isUser = msg.role === 'user'
   const isError = msg.role === 'error'
@@ -177,7 +246,9 @@ function MessageBubble({ msg }) {
         border: `1px solid ${isUser ? '#1a3a55' : isError ? 'rgba(255,82,82,0.2)' : '#2a3f54'}`,
         color: isError ? '#ff5252' : '#E0E8F0',
       }}>
-        {msg.content}
+        {isUser || isError
+          ? msg.content
+          : <MarkdownContent text={msg.content} />}
       </div>
       {msg.meta && (
         <div style={styles.meta}>
@@ -229,8 +300,29 @@ const styles = {
     padding: '10px 14px',
     fontSize: '0.9rem',
     lineHeight: 1.6,
-    whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
+  },
+  mdH1: { fontSize: '1.15rem', fontWeight: 700, margin: '8px 0 4px', color: '#00D4FF' },
+  mdH2: { fontSize: '1.05rem', fontWeight: 700, margin: '8px 0 4px', color: '#00D4FF' },
+  mdH3: { fontSize: '0.95rem', fontWeight: 700, margin: '6px 0 4px', color: '#7AC8FF' },
+  mdP:  { margin: '2px 0', lineHeight: 1.6 },
+  mdLi: { margin: '2px 0 2px 16px', lineHeight: 1.6, listStyleType: 'disc', display: 'list-item' },
+  mdPre: {
+    background: '#0d1e2d',
+    border: '1px solid #2a3f54',
+    borderRadius: 6,
+    padding: '10px 12px',
+    overflowX: 'auto',
+    margin: '6px 0',
+  },
+  mdCode: { fontFamily: 'monospace', fontSize: '0.85rem', color: '#F5A623' },
+  mdInlineCode: {
+    fontFamily: 'monospace',
+    fontSize: '0.85rem',
+    background: '#0d1e2d',
+    color: '#F5A623',
+    padding: '1px 5px',
+    borderRadius: 4,
   },
   meta: {
     fontSize: '0.7rem',

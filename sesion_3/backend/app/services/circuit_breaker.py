@@ -80,6 +80,14 @@ class CircuitBreaker:
     def state(self) -> CircuitState:
         return self._state
 
+    @property
+    def failure_count(self) -> int:
+        return self._failure_count
+
+    def get_status(self) -> dict:
+        """Alias de status_dict() para compatibilidad."""
+        return self.status_dict()
+
     def status_dict(self) -> dict:
         """Retorna el estado actual para exponer en /health."""
         return {
@@ -127,6 +135,40 @@ class CircuitBreaker:
         except Exception as exc:
             await self._on_failure(exc)
             raise
+
+    # ── API síncrona para testing ────────────────────────────────────────────
+
+    def record_failure(self) -> None:
+        """Registra un fallo de forma síncrona (útil en tests)."""
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+        if (
+            self._state == CircuitState.HALF_OPEN
+            or self._failure_count >= self.failure_threshold
+        ):
+            self._state = CircuitState.OPEN
+
+    def record_success(self) -> None:
+        """Registra un éxito de forma síncrona (útil en tests)."""
+        self._state = CircuitState.CLOSED
+        self._failure_count = 0
+
+    def can_pass_request(self) -> bool:
+        """
+        Verifica si una petición puede pasar.
+        Si el circuito está OPEN y ha pasado el timeout, lo pasa a HALF_OPEN.
+        """
+        if self._state == CircuitState.CLOSED:
+            return True
+        if self._state == CircuitState.HALF_OPEN:
+            return True
+        if (
+            self._state == CircuitState.OPEN
+            and time.time() - self._last_failure_time >= self.recovery_timeout
+        ):
+            self._state = CircuitState.HALF_OPEN
+            return True
+        return False
 
     # ── Transiciones de estado ───────────────────────────────────────────────
 

@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     # ── JWT (Tema 5) ─────────────────────────────────────────────────────────
     # IMPORTANTE: en producción usar un secreto aleatorio largo (256 bits):
     #   python -c "import secrets; print(secrets.token_hex(32))"
-    JWT_SECRET_KEY: str = "CAMBIA_ESTE_SECRETO_EN_PRODUCCION_abc123xyz789"
+    JWT_SECRET_KEY: str = "a2f6fd41e294b09644bff33ec65f7d1324c74134301f7bbbced2ff5446a33b04"
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # ── Rate Limiting (Tema 5) ───────────────────────────────────────────────
@@ -38,12 +38,12 @@ class Settings(BaseSettings):
 
     # ── Ollama ───────────────────────────────────────────────────────────────
     OLLAMA_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.2"
+    OLLAMA_MODEL: str = "llama3.2:3b"
     OLLAMA_TIMEOUT: int = 120         # segundos máximos por respuesta
 
     # ── CORS ─────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"]
+        default=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080", "http://localhost:8000"]
     )
 
     # ── Audit Log (Tema 5) ───────────────────────────────────────────────────

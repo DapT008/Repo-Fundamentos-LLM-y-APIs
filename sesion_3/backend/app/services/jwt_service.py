@@ -11,6 +11,7 @@ Cubre:
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from fastapi import HTTPException, status
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
@@ -37,7 +38,11 @@ class TokenPair(BaseModel):
 
 # ── Funciones principales ─────────────────────────────────────────────────────
 
-def create_access_token(subject: str, scopes: list[str] = ["read"]) -> str:
+def create_access_token(
+    subject: str,
+    scopes: list[str] | None = None,
+    expires_delta: timedelta | None = None,
+) -> str:
     """
     Crea un JWT de acceso de corta duración.
 
@@ -47,14 +52,18 @@ def create_access_token(subject: str, scopes: list[str] = ["read"]) -> str:
         Identificador del usuario (email o user_id).
     scopes : list[str]
         Permisos del token. Valores válidos: "read", "write", "admin".
+    expires_delta : timedelta | None
+        Duración del token. Por defecto usa ACCESS_TOKEN_EXPIRE_MINUTES.
 
     Retorna
     -------
     str
         Token JWT firmado.
     """
+    if scopes is None:
+        scopes = ["read"]
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = now + (expires_delta if expires_delta is not None else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
 
     payload: dict[str, Any] = {
         "sub": subject,
@@ -84,8 +93,10 @@ def create_refresh_token(subject: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_token_pair(subject: str, scopes: list[str] = ["read"]) -> TokenPair:
+def create_token_pair(subject: str, scopes: list[str] | None = None) -> TokenPair:
     """Emite access token + refresh token en una sola llamada."""
+    if scopes is None:
+        scopes = ["read"]
     return TokenPair(
         access_token=create_access_token(subject, scopes),
         refresh_token=create_refresh_token(subject),
@@ -128,11 +139,14 @@ def require_scopes(token_data: TokenData, required: list[str]) -> None:
 
     Lanza
     -----
-    PermissionError : si falta algún scope.
+    HTTPException 403 : si falta algún scope.
     """
     missing = [s for s in required if s not in token_data.scopes]
     if missing:
-        raise PermissionError(
-            f"Scopes insuficientes. Requeridos: {required}. "
-            f"Faltantes: {missing}. Tienes: {token_data.scopes}"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Scopes insuficientes. Requeridos: {required}. "
+                f"Faltantes: {missing}. Tienes: {token_data.scopes}"
+            ),
         )

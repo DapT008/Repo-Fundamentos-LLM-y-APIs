@@ -17,7 +17,7 @@ const C = {
 const DEMO_USERS = [
   { email: 'admin@techcorp.com', password: 'admin123', role: 'Admin (read/write/admin)' },
   { email: 'dev@techcorp.com',   password: 'dev123',   role: 'Dev (read/write)' },
-  { email: 'readonly@techcorp.com', password: 'read123', role: 'Readonly (read)' },
+  { email: 'readonly@techcorp.com', password: 'readonly123', role: 'Readonly (read)' },
 ]
 
 export default function LoginPage() {

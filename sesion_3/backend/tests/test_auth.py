@@ -12,7 +12,7 @@ import pytest_asyncio
 from datetime import timedelta, datetime, timezone
 
 import os
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only-not-production")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-not-production")
 os.environ.setdefault("ENVIRONMENT", "test")
 
 
@@ -40,28 +40,32 @@ class TestJWTService:
         assert data.sub == "alice"
         assert "read" in data.scopes
 
-    def test_verify_token_with_wrong_secret_fails(self):
-        import jwt as pyjwt
+    def test_verify_token_with_wrong_secret_raises(self):
+        from jose import JWTError, jwt as jose_jwt
         from app.services.jwt_service import verify_token
-        # Crear un token con un secret diferente
-        fake_token = pyjwt.encode(
-            {"sub": "alice", "scopes": ["admin"], "exp": datetime.now(timezone.utc).timestamp() + 3600},
+        fake_token = jose_jwt.encode(
+            {
+                "sub": "alice",
+                "scopes": ["admin"],
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+                "type": "access",
+            },
             "WRONG-SECRET",
-            algorithm="HS256"
+            algorithm="HS256",
         )
-        result = verify_token(fake_token)
-        assert result is None
+        with pytest.raises(JWTError):
+            verify_token(fake_token)
 
-    def test_verify_expired_token_returns_none(self):
+    def test_verify_expired_token_raises(self):
+        from jose import JWTError
         from app.services.jwt_service import create_access_token, verify_token
-        # Crear token que ya expiró
         token = create_access_token(
             subject="alice",
             scopes=["read"],
-            expires_delta=timedelta(seconds=-1)  # Expirado hace 1 segundo
+            expires_delta=timedelta(seconds=-1),
         )
-        result = verify_token(token)
-        assert result is None
+        with pytest.raises(JWTError):
+            verify_token(token)
 
     def test_create_token_pair_has_both_tokens(self):
         from app.services.jwt_service import create_token_pair
@@ -95,18 +99,16 @@ class TestJWTService:
         assert exc_info.value.status_code == 403
 
     def test_refresh_token_has_longer_expiry(self):
-        from app.services.jwt_service import create_access_token, create_refresh_token, verify_token
-        import jwt as pyjwt
-        from app.core.config import get_settings
-        settings = get_settings()
+        from app.services.jwt_service import create_access_token, create_refresh_token
+        from app.core.config import settings
+        from jose import jwt as jose_jwt
 
         access = create_access_token(subject="alice", scopes=["read"])
         refresh = create_refresh_token(subject="alice")
 
-        access_data = pyjwt.decode(access, settings.SECRET_KEY, algorithms=["HS256"])
-        refresh_data = pyjwt.decode(refresh, settings.SECRET_KEY, algorithms=["HS256"])
+        access_data = jose_jwt.decode(access, settings.JWT_SECRET_KEY, algorithms=["HS256"])
+        refresh_data = jose_jwt.decode(refresh, settings.JWT_SECRET_KEY, algorithms=["HS256"])
 
-        # El refresh token debe expirar más tarde que el access token
         assert refresh_data["exp"] > access_data["exp"]
 
 
@@ -121,7 +123,7 @@ class TestAuthEndpoints:
     async def test_login_valid_credentials(self, client):
         response = await client.post(
             "/auth/token",
-            data={"username": "alice", "password": "alice123", "grant_type": "password"},
+            data={"username": "dev@techcorp.com", "password": "dev123", "grant_type": "password"},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert response.status_code == 200
@@ -134,7 +136,7 @@ class TestAuthEndpoints:
     async def test_login_invalid_password(self, client):
         response = await client.post(
             "/auth/token",
-            data={"username": "alice", "password": "WRONG", "grant_type": "password"},
+            data={"username": "dev@techcorp.com", "password": "WRONG", "grant_type": "password"},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert response.status_code == 401
@@ -143,7 +145,7 @@ class TestAuthEndpoints:
     async def test_login_unknown_user(self, client):
         response = await client.post(
             "/auth/token",
-            data={"username": "nonexistent", "password": "pass", "grant_type": "password"},
+            data={"username": "nonexistent@example.com", "password": "pass", "grant_type": "password"},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert response.status_code == 401
@@ -152,7 +154,7 @@ class TestAuthEndpoints:
         response = await client.get("/auth/me", headers=user_headers)
         assert response.status_code == 200
         data = response.json()
-        assert "username" in data
+        assert "email" in data
         assert "scopes" in data
 
     async def test_get_current_user_without_token(self, client):
@@ -167,15 +169,13 @@ class TestAuthEndpoints:
         assert response.status_code == 401
 
     async def test_refresh_token_returns_new_access_token(self, client):
-        # Primero hacer login
         login_response = await client.post(
             "/auth/token",
-            data={"username": "alice", "password": "alice123", "grant_type": "password"},
+            data={"username": "dev@techcorp.com", "password": "dev123", "grant_type": "password"},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         refresh_token = login_response.json()["refresh_token"]
 
-        # Usar el refresh token
         response = await client.post(
             "/auth/refresh",
             json={"refresh_token": refresh_token}
@@ -184,25 +184,29 @@ class TestAuthEndpoints:
         assert "access_token" in response.json()
 
     async def test_admin_has_admin_scope(self, client):
-        response = await client.post(
+        login_response = await client.post(
             "/auth/token",
-            data={"username": "admin", "password": "admin123", "grant_type": "password"},
+            data={"username": "admin@techcorp.com", "password": "admin123", "grant_type": "password"},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        data = response.json()
-        assert "admin" in data.get("scopes", []) or True  # admin scope en el token
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+
+        me_response = await client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert me_response.status_code == 200
+        assert "admin" in me_response.json()["scopes"]
 
     async def test_response_time_is_constant_for_invalid_user(self, client):
-        """
-        Timing attack prevention: el tiempo de respuesta para usuario inexistente
-        debe ser similar al de contraseña incorrecta (no debe revelar si el usuario existe).
-        """
+        """Timing: respuesta para usuario inexistente no debe revelar si el usuario existe."""
         import time
 
         times = []
         for username, password in [
-            ("nonexistent_user_xyz", "wrong"),
-            ("alice", "wrong_password"),
+            ("nonexistent_user_xyz@example.com", "wrong"),
+            ("dev@techcorp.com", "wrong_password"),
         ]:
             start = time.monotonic()
             await client.post(
@@ -213,5 +217,4 @@ class TestAuthEndpoints:
             elapsed = time.monotonic() - start
             times.append(elapsed)
 
-        # Ambas respuestas deben ser > 0 (tienen comparación de hash)
         assert all(t > 0 for t in times)

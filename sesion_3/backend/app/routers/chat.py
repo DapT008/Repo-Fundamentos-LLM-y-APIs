@@ -12,29 +12,19 @@ Demuestra cómo proteger un endpoint de chat con:
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+import re
+
 import httpx
 import structlog
 
 from app.routers.auth import get_current_user, TokenData
+from app.routers.security import WAF_RULES
 from app.services.circuit_breaker import ollama_cb, CircuitBreakerOpenError
 from app.services.audit_logger import AuditLogger, AuditEvent
 from app.core.config import settings
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
-
-# ── Patrones de prompt injection (WAF mínimo) ─────────────────────────────────
-INJECTION_PATTERNS = [
-    "ignore previous instructions",
-    "ignore all instructions",
-    "you are now",
-    "disregard your",
-    "forget everything",
-    "act as if",
-    "jailbreak",
-    "pretend you are",
-    "system prompt",
-]
 
 
 # ── Modelos ──────────────────────────────────────────────────────────────────
@@ -48,7 +38,7 @@ class ChatRequest(BaseModel):
         examples=["¿Qué es un circuit breaker?"],
     )
     model: str = Field(
-        default="llama3.2",
+        default="llama3.2:3b",
         description="Modelo Ollama a usar",
         examples=["llama3.2", "mistral", "phi3"],
     )
@@ -88,24 +78,27 @@ async def chat(
     audit = AuditLogger.get()
     ip = request.client.host if request.client else "unknown"
 
-    # 1. Detección de prompt injection
-    message_lower = body.message.lower()
-    for pattern in INJECTION_PATTERNS:
-        if pattern in message_lower:
-            await audit.log(
-                AuditEvent.WAF_BLOCK,
-                user=current_user.sub,
-                ip=ip,
-                severity="WARNING",
-                details={
-                    "pattern_matched": pattern,
-                    "message_preview": body.message[:100],
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Mensaje rechazado por políticas de seguridad.",
-            )
+    # 1. WAF: detectar amenazas de alta severidad antes de enviar al LLM
+    for rule_name, rule in WAF_RULES.items():
+        if rule["severity"] != "HIGH":
+            continue
+        for pattern in rule["patterns"]:
+            if re.search(pattern, body.message, re.IGNORECASE):
+                await audit.log(
+                    AuditEvent.WAF_BLOCK,
+                    user=current_user.sub,
+                    ip=ip,
+                    severity="WARNING",
+                    details={
+                        "rule": rule_name,
+                        "pattern_matched": pattern,
+                        "message_preview": body.message[:100],
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Mensaje rechazado por políticas de seguridad.",
+                )
 
     # 2. Registrar petición en audit log
     await audit.log(
@@ -137,7 +130,7 @@ async def chat(
         logger.error("Error llamando a Ollama", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Error del servicio LLM: {str(e)}",
+            detail="Error del servicio LLM. Consulte los logs para más detalles.",
         )
 
     return ChatResponse(

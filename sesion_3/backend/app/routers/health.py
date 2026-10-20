@@ -150,14 +150,17 @@ async def _check_ollama() -> DependencyStatus:
 async def _check_disk() -> DependencyStatus:
     """Verifica que hay espacio suficiente en disco para el audit log."""
     import shutil
-    usage = shutil.disk_usage("/")
+    from pathlib import Path
+    check_path = str(Path(settings.AUDIT_LOG_PATH).parent.resolve())
+    usage = shutil.disk_usage(check_path)
     free_pct = (usage.free / usage.total) * 100
-    status = "ok" if free_pct > 10 else "degraded"
+    disk_status = "ok" if free_pct > 10 else "degraded"
     return DependencyStatus(
         name="disk",
-        status=status,
+        status=disk_status,
         details={
             "free_pct": round(free_pct, 1),
             "free_gb": round(usage.free / 1e9, 2),
+            "path": check_path,
         },
     )

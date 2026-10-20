@@ -15,6 +15,8 @@ Flujo OAuth2 Password Grant (RFC 6749, Section 4.3):
   5. Cuando expira, cliente usa refresh_token para renovar sin re-login
 """
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError
@@ -226,10 +228,14 @@ async def me(token_data: TokenData = Depends(get_current_user)):
     Requiere scope: read (mínimo).
     """
     user = DEMO_USERS[token_data.sub]
-    expires_seconds = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    remaining = (
+        int((token_data.exp - datetime.now(timezone.utc)).total_seconds())
+        if token_data.exp
+        else settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
     return UserProfile(
         email=token_data.sub,
         name=user["name"],
         scopes=token_data.scopes,
-        token_expires_in_seconds=expires_seconds,
+        token_expires_in_seconds=max(0, remaining),
     )
